@@ -22,77 +22,57 @@
 
 package org.wildfly.extension.microprofile.health;
 
-import java.util.function.Supplier;
-
-import io.smallrye.health.SmallRyeHealth;
-import io.smallrye.health.SmallRyeHealthReporter;
-import io.undertow.server.HttpHandler;
-import io.undertow.server.HttpServerExchange;
-import io.undertow.util.Headers;
 import org.jboss.as.controller.OperationContext;
-import org.jboss.as.server.mgmt.domain.ExtensibleHttpManagement;
-import org.jboss.msc.Service;
-import org.jboss.msc.service.ServiceBuilder;
+import org.jboss.msc.service.Service;
 import org.jboss.msc.service.ServiceName;
 import org.jboss.msc.service.StartContext;
 import org.jboss.msc.service.StopContext;
+import org.jboss.msc.value.InjectedValue;
+import org.wildfly.extension.undertow.Host;
+import org.wildfly.extension.undertow.UndertowService;
+
+import io.smallrye.health.SmallRyeHealthReporter;
 
 /**
  * @author <a href="http://jmesnil.net/">Jeff Mesnil</a> (c) 2018 Red Hat inc.
  */
-public class HealthContextService implements Service {
+public class HealthContextService implements Service<HealthCheckHandler> {
 
     static final ServiceName SERVICE_NAME = ServiceName.JBOSS.append("extension", "health", "context");
     private static final String CONTEXT_NAME = "health";
 
-    private final Supplier<ExtensibleHttpManagement> extensibleHttpManagement;
-    private final boolean securityEnabled;
-    private final Supplier<SmallRyeHealthReporter> healthReporter;
+    //private final Supplier<ExtensibleHttpManagement> extensibleHttpManagement;
+    //private final Supplier<Host> host;
+    private final InjectedValue<Host> host = new InjectedValue<>();
+    private final InjectedValue<SmallRyeHealthReporter> healthReporter = new InjectedValue<>();
 
+    private final boolean securityEnabled;
 
     static void install(OperationContext context, boolean securityEnabled) {
-        ServiceBuilder<?> serviceBuilder = context.getServiceTarget().addService(SERVICE_NAME);
-
-        Supplier<ExtensibleHttpManagement> extensibleHttpManagement = serviceBuilder.requires(context.getCapabilityServiceName(MicroProfileHealthSubsystemDefinition.HTTP_EXTENSIBILITY_CAPABILITY, ExtensibleHttpManagement.class));
-        Supplier<SmallRyeHealthReporter> healthReporter = serviceBuilder.requires(context.getCapabilityServiceName(MicroProfileHealthSubsystemDefinition.HEALTH_REPORTER_CAPABILITY, SmallRyeHealthReporter.class));
-
-        Service healthContextService = new HealthContextService(extensibleHttpManagement, securityEnabled, healthReporter);
-
-        serviceBuilder.setInstance(healthContextService)
-                .install();
+        HealthContextService service = new HealthContextService(securityEnabled);
+        context.getServiceTarget().addService(SERVICE_NAME, service)
+            .addDependency(UndertowService.virtualHostName("default-server", "default-host"), Host.class, service.host)
+            .addDependency(MicroProfileHealthSubsystemDefinition.HEALTH_REPORTER_SERVICE, SmallRyeHealthReporter.class, service.healthReporter)
+            .install();
     }
 
-    HealthContextService(Supplier<ExtensibleHttpManagement> extensibleHttpManagement, boolean securityEnabled, Supplier<SmallRyeHealthReporter> healthReporter) {
-        this.extensibleHttpManagement = extensibleHttpManagement;
+    HealthContextService(boolean securityEnabled) {
         this.securityEnabled = securityEnabled;
-        this.healthReporter = healthReporter;
     }
 
     @Override
     public void start(StartContext context) {
         // access to the /health endpoint is unsecured
-        extensibleHttpManagement.get().addManagementHandler(CONTEXT_NAME, securityEnabled,
-                new HealthCheckHandler(healthReporter.get()));
+        host.getValue().registerHandler(CONTEXT_NAME, new HealthCheckHandler(healthReporter.getValue()));
     }
 
     @Override
     public void stop(StopContext context) {
-        extensibleHttpManagement.get().removeContext(CONTEXT_NAME);
+        host.getValue().unregisterHandler(CONTEXT_NAME);
     }
 
-    private class HealthCheckHandler implements HttpHandler {
-        private final SmallRyeHealthReporter healthReporter;
-
-        public HealthCheckHandler(SmallRyeHealthReporter healthReporter) {
-            this.healthReporter = healthReporter;
-        }
-
-        @Override
-        public void handleRequest(HttpServerExchange exchange) {
-            final SmallRyeHealth health = healthReporter.getHealth();
-            exchange.setStatusCode(health.isDown() ? 503 : 200)
-                    .getResponseHeaders().add(Headers.CONTENT_TYPE, "application/json");
-            exchange.getResponseSender().send(health.getPayload().toString());
-        }
+    @Override
+    public HealthCheckHandler getValue() throws IllegalStateException, IllegalArgumentException {
+        return null;
     }
 }
